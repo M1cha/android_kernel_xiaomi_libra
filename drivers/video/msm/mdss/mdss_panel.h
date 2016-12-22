@@ -1,4 +1,5 @@
 /* Copyright (c) 2008-2015, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2016 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -376,6 +377,11 @@ struct lvds_panel_info {
 	char channel_swap;
 };
 
+enum fbc_mode {
+	FBC_MODE_V1 = 1,
+	FBC_MODE_V2,
+};
+
 struct fbc_panel_info {
 	u32 enabled;
 	u32 target_bpp;
@@ -491,6 +497,8 @@ struct mdss_panel_info {
 
 	/* debugfs structure for the panel */
 	struct mdss_panel_debugfs_info *debugfs_info;
+	u64 panel_active;
+	u64 kickoff_count;
 };
 
 struct mdss_panel_timing {
