@@ -1,4 +1,5 @@
 /* Copyright (c) 2014-2015, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2016 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -41,8 +42,12 @@
 #define SAMPLING_RATE_8KHZ      8000
 #define SAMPLING_RATE_16KHZ     16000
 #define SAMPLING_RATE_32KHZ     32000
+#define SAMPLING_RATE_44P1KHZ   44100
 #define SAMPLING_RATE_48KHZ     48000
+#define SAMPLING_RATE_64KHZ     64000
+#define SAMPLING_RATE_88P2KHZ   88200
 #define SAMPLING_RATE_96KHZ     96000
+#define SAMPLING_RATE_176P4KHZ  176400
 #define SAMPLING_RATE_192KHZ    192000
 
 #define MSM8994_SPK_ON     1
@@ -54,11 +59,19 @@
 #define I2S_PCM_SEL_PCM       1
 #define I2S_PCM_SEL_I2S       0
 #define I2S_PCM_SEL_OFFSET    1
+#define I2S_MASTER_OFFSET	0
+#define I2S_MASTER_SEL	0
+#define I2S_SLAVE_SEL	1
 
 #define WCD9XXX_MBHC_DEF_BUTTONS    8
 #define WCD9XXX_MBHC_DEF_RLOADS     5
 #define TOMTOM_EXT_CLK_RATE         9600000
 #define ADSP_STATE_READY_TIMEOUT_MS    3000
+
+#define MSM_TERT_MI2S_MASTER
+
+#define MSM_TERT_MI2S_MCLK
+#define MSM_QUAT_MI2S_MCLK
 
 enum pinctrl_pin_state {
 	STATE_DISABLE = 0,   /* All pins are in sleep state */
@@ -68,10 +81,10 @@ enum pinctrl_pin_state {
 };
 
 enum mi2s_pcm_mux {
-	PRI_MI2S_PCM = 1,
+	PRI_MI2S_PCM = 0,
 	SEC_MI2S_PCM,
 	TERT_MI2S_PCM,
-	QUAD_MI2S_PCM
+	QUAT_MI2S_PCM
 };
 
 struct msm_pinctrl_info {
@@ -81,6 +94,7 @@ struct msm_pinctrl_info {
 	struct pinctrl_state *auxpcm_active;
 	struct pinctrl_state *active;
 	enum pinctrl_pin_state curr_state;
+	void __iomem *mux;
 };
 
 struct msm8994_asoc_mach_data {
@@ -90,6 +104,10 @@ struct msm8994_asoc_mach_data {
 	struct msm_pinctrl_info pinctrl_info;
 	void __iomem *pri_mux;
 	void __iomem *sec_mux;
+	struct msm_pinctrl_info pri_mi2s_pinctrl_info;
+	struct msm_pinctrl_info sec_mi2s_pinctrl_info;
+	struct msm_pinctrl_info tert_mi2s_pinctrl_info;
+	struct msm_pinctrl_info quat_mi2s_pinctrl_info;
 };
 
 static int slim0_rx_sample_rate = SAMPLING_RATE_48KHZ;
@@ -149,6 +167,8 @@ static char const *hdmi_rx_ch_text[] = {"Two", "Three", "Four", "Five",
 static char const *rx_bit_format_text[] = {"S16_LE", "S24_LE", "S24_3LE"};
 static char const *slim0_rx_sample_rate_text[] = {"KHZ_48", "KHZ_96",
 					"KHZ_192"};
+static char const *quat_mi2s_rx_sample_rate_text[] = {"KHZ_44P1", "KHZ_48",
+		"KHZ_64", "KHZ_88P2", "KHZ_96", "KHZ_176P4", "KHZ_192"};
 static const char *const proxy_rx_ch_text[] = {"One", "Two", "Three", "Four",
 	"Five",	"Six", "Seven", "Eight"};
 
@@ -176,7 +196,7 @@ static struct wcd9xxx_mbhc_config mbhc_cfg = {
 	.anc_micbias = MBHC_MICBIAS2,
 	.mclk_cb_fn = msm_snd_enable_codec_ext_clk,
 	.mclk_rate = TOMTOM_EXT_CLK_RATE,
-	.gpio_level_insert = 1,
+	.gpio_level_insert = 0,
 	.detect_extn_cable = true,
 	.micbias_enable_flags = 1 << MBHC_MICBIAS_ENABLE_THRESHOLD_HEADSET,
 	.insert_detect = true,
@@ -208,6 +228,12 @@ static struct afe_clk_cfg mi2s_tx_clk = {
 	Q6AFE_LPASS_MODE_CLK1_VALID,
 	0,
 };
+
+static int tert_mi2s_sample_rate = SAMPLING_RATE_48KHZ;
+static int quat_mi2s_sample_rate = SAMPLING_RATE_48KHZ;
+static int tert_mi2s_bit_format = SNDRV_PCM_FORMAT_S16_LE;
+static int quat_mi2s_bit_format = SNDRV_PCM_FORMAT_S24_LE;
+
 
 static inline int param_is_mask(int p)
 {
@@ -689,6 +715,7 @@ static const struct snd_soc_dapm_widget msm8994_dapm_widgets[] = {
 	SND_SOC_DAPM_MIC("Headset Mic", NULL),
 	SND_SOC_DAPM_MIC("ANCRight Headset Mic", NULL),
 	SND_SOC_DAPM_MIC("ANCLeft Headset Mic", NULL),
+	SND_SOC_DAPM_MIC("Analog Mic3", NULL),
 	SND_SOC_DAPM_MIC("Analog Mic4", NULL),
 	SND_SOC_DAPM_MIC("Analog Mic5", NULL),
 	SND_SOC_DAPM_MIC("Analog Mic6", NULL),
@@ -1117,6 +1144,192 @@ static int msm8994_auxpcm_rate_put(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
+static int quat_mi2s_sample_rate_get(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	int sample_rate_val = 0;
+
+	switch (quat_mi2s_sample_rate) {
+	case SAMPLING_RATE_192KHZ:
+		sample_rate_val = 6;
+		break;
+
+	case SAMPLING_RATE_176P4KHZ:
+		sample_rate_val = 5;
+		break;
+
+	case SAMPLING_RATE_96KHZ:
+		sample_rate_val = 4;
+		break;
+
+	case SAMPLING_RATE_88P2KHZ:
+		sample_rate_val = 3;
+		break;
+
+	case SAMPLING_RATE_64KHZ:
+		sample_rate_val = 2;
+		break;
+
+	case SAMPLING_RATE_44P1KHZ:
+		sample_rate_val = 0;
+		break;
+
+	case SAMPLING_RATE_48KHZ:
+	default:
+		sample_rate_val = 1;
+		break;
+	}
+
+	ucontrol->value.integer.value[0] = sample_rate_val;
+
+	return 0;
+}
+
+static int quat_mi2s_sample_rate_put(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	switch (ucontrol->value.integer.value[0]) {
+	case 6:
+		quat_mi2s_sample_rate = SAMPLING_RATE_192KHZ;
+		break;
+	case 5:
+		quat_mi2s_sample_rate = SAMPLING_RATE_176P4KHZ;
+		break;
+	case 4:
+		quat_mi2s_sample_rate = SAMPLING_RATE_96KHZ;
+		break;
+	case 3:
+		quat_mi2s_sample_rate = SAMPLING_RATE_88P2KHZ;
+		break;
+	case 2:
+		quat_mi2s_sample_rate = SAMPLING_RATE_64KHZ;
+		break;
+	case 0:
+		quat_mi2s_sample_rate = SAMPLING_RATE_44P1KHZ;
+		break;
+	case 1:
+	default:
+		quat_mi2s_sample_rate = SAMPLING_RATE_48KHZ;
+	}
+
+	pr_debug("%s: sample_rate = %d\n", __func__, quat_mi2s_sample_rate);
+
+	return 0;
+}
+
+static int quat_mi2s_bit_format_get(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	switch (quat_mi2s_bit_format) {
+	case SNDRV_PCM_FORMAT_S24_LE:
+		ucontrol->value.integer.value[0] = 1;
+		break;
+
+	case SNDRV_PCM_FORMAT_S16_LE:
+	default:
+		ucontrol->value.integer.value[0] = 0;
+		break;
+	}
+
+	return 0;
+}
+
+static int quat_mi2s_bit_format_put(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	switch (ucontrol->value.integer.value[0]) {
+	case 1:
+		quat_mi2s_bit_format = SNDRV_PCM_FORMAT_S24_LE;
+		break;
+	case 0:
+	default:
+		quat_mi2s_bit_format = SNDRV_PCM_FORMAT_S16_LE;
+		break;
+	}
+	pr_debug("%s: bit_format = %d \n", __func__, quat_mi2s_bit_format);
+	return 0;
+}
+
+static int tert_mi2s_sample_rate_get(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	int sample_rate_val = 0;
+
+	switch (tert_mi2s_sample_rate) {
+	case SAMPLING_RATE_192KHZ:
+		sample_rate_val = 2;
+		break;
+
+	case SAMPLING_RATE_96KHZ:
+		sample_rate_val = 1;
+		break;
+
+	case SAMPLING_RATE_48KHZ:
+	default:
+		sample_rate_val = 0;
+		break;
+	}
+
+	ucontrol->value.integer.value[0] = sample_rate_val;
+
+	return 0;
+}
+
+static int tert_mi2s_sample_rate_put(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	switch (ucontrol->value.integer.value[0]) {
+	case 2:
+		tert_mi2s_sample_rate = SAMPLING_RATE_192KHZ;
+		break;
+	case 1:
+		tert_mi2s_sample_rate = SAMPLING_RATE_96KHZ;
+		break;
+	case 0:
+	default:
+		tert_mi2s_sample_rate = SAMPLING_RATE_48KHZ;
+		break;
+	}
+
+	pr_debug("%s: sample_rate = %d\n", __func__, tert_mi2s_sample_rate);
+
+	return 0;
+}
+
+static int tert_mi2s_bit_format_get(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	switch (tert_mi2s_bit_format) {
+	case SNDRV_PCM_FORMAT_S24_LE:
+		ucontrol->value.integer.value[0] = 1;
+		break;
+
+	case SNDRV_PCM_FORMAT_S16_LE:
+	default:
+		ucontrol->value.integer.value[0] = 0;
+		break;
+	}
+
+	return 0;
+}
+
+static int tert_mi2s_bit_format_put(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	switch (ucontrol->value.integer.value[0]) {
+	case 1:
+		tert_mi2s_bit_format = SNDRV_PCM_FORMAT_S24_LE;
+		break;
+	case 0:
+	default:
+		tert_mi2s_bit_format = SNDRV_PCM_FORMAT_S16_LE;
+		break;
+	}
+
+	pr_debug("%s: bit_format = %d \n", __func__, tert_mi2s_bit_format);
+	return 0;
+}
+
 static int msm_proxy_rx_ch_get(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_value *ucontrol)
 {
@@ -1499,6 +1712,37 @@ static struct snd_soc_ops msm_sec_auxpcm_be_ops = {
 	.shutdown = msm_sec_auxpcm_shutdown,
 };
 
+static void msm_mi2s_release_pinctrl(struct platform_device *pdev,
+				enum mi2s_pcm_mux mux)
+{
+	struct snd_soc_card *card = platform_get_drvdata(pdev);
+	struct msm8994_asoc_mach_data *pdata = snd_soc_card_get_drvdata(card);
+	struct msm_pinctrl_info *pinctrl_info = &pdata->pri_mi2s_pinctrl_info;
+
+	switch (mux) {
+	case PRI_MI2S_PCM:
+		pinctrl_info = &pdata->pri_mi2s_pinctrl_info;
+		break;
+	case SEC_MI2S_PCM:
+		pinctrl_info = &pdata->sec_mi2s_pinctrl_info;
+		break;
+	case TERT_MI2S_PCM:
+		pinctrl_info = &pdata->tert_mi2s_pinctrl_info;
+		break;
+	case QUAT_MI2S_PCM:
+		pinctrl_info = &pdata->quat_mi2s_pinctrl_info;
+		break;
+	default:
+		pr_err("%s: Not a valid MUX ID: %d\n", __func__, mux);
+		break;
+	}
+	if (pinctrl_info) {
+		iounmap(pinctrl_info->mux);
+		devm_pinctrl_put(pinctrl_info->pinctrl);
+		pinctrl_info->pinctrl = NULL;
+	}
+}
+
 static int msm_tx_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 				struct snd_pcm_hw_params *params)
 {
@@ -1705,6 +1949,7 @@ static const struct soc_enum msm_snd_enum[] = {
 	SOC_ENUM_SINGLE_EXT(8, proxy_rx_ch_text),
 	SOC_ENUM_SINGLE_EXT(3, hdmi_rx_sample_rate_text),
 	SOC_ENUM_SINGLE_EXT(2, vi_feed_ch_text),
+	SOC_ENUM_SINGLE_EXT(7, quat_mi2s_rx_sample_rate_text),
 };
 
 static const struct snd_kcontrol_new msm_snd_controls[] = {
@@ -1736,6 +1981,14 @@ static const struct snd_kcontrol_new msm_snd_controls[] = {
 			slim0_tx_bit_format_get, slim0_tx_bit_format_put),
 	SOC_ENUM_EXT("SLIM_0_TX SampleRate", msm_snd_enum[5],
 			slim0_tx_sample_rate_get, slim0_tx_sample_rate_put),
+	SOC_ENUM_EXT("TERT_MI2S BitWidth", msm_snd_enum[4],
+			tert_mi2s_bit_format_get, tert_mi2s_bit_format_put),
+	SOC_ENUM_EXT("TERT_MI2S SampleRate", msm_snd_enum[5],
+			tert_mi2s_sample_rate_get, tert_mi2s_sample_rate_put),
+	SOC_ENUM_EXT("QUAT_MI2S BitWidth", msm_snd_enum[4],
+			quat_mi2s_bit_format_get, quat_mi2s_bit_format_put),
+	SOC_ENUM_EXT("QUAT_MI2S SampleRate", msm_snd_enum[9],
+			quat_mi2s_sample_rate_get, quat_mi2s_sample_rate_put),
 };
 
 static bool msm8994_swap_gnd_mic(struct snd_soc_codec *codec)
@@ -2070,7 +2323,7 @@ static void *def_codec_mbhc_cal(void)
 #undef S
 #define S(X, Y) ((WCD9XXX_MBHC_CAL_PLUG_TYPE_PTR(codec_cal)->X) = (Y))
 	S(v_no_mic, 30);
-	S(v_hs_max, 2400);
+	S(v_hs_max, 2700);
 #undef S
 #define S(X, Y) ((WCD9XXX_MBHC_CAL_BTN_DET_PTR(codec_cal)->X) = (Y))
 	S(c[0], 62);
@@ -2088,22 +2341,22 @@ static void *def_codec_mbhc_cal(void)
 	btn_low = wcd9xxx_mbhc_cal_btn_det_mp(btn_cfg, MBHC_BTN_DET_V_BTN_LOW);
 	btn_high = wcd9xxx_mbhc_cal_btn_det_mp(btn_cfg,
 					       MBHC_BTN_DET_V_BTN_HIGH);
-	btn_low[0] = -50;
-	btn_high[0] = 90;
-	btn_low[1] = 130;
-	btn_high[1] = 220;
-	btn_low[2] = 235;
-	btn_high[2] = 335;
-	btn_low[3] = 375;
-	btn_high[3] = 655;
-	btn_low[4] = 656;
-	btn_high[4] = 660;
-	btn_low[5] = 661;
-	btn_high[5] = 670;
-	btn_low[6] = 671;
-	btn_high[6] = 680;
-	btn_low[7] = 681;
-	btn_high[7] = 690;
+	btn_low[0] = -75;
+	btn_high[0] = 150;
+	btn_low[1] = 151;
+	btn_high[1] = 330;
+	btn_low[2] = 331;
+	btn_high[2] = 655;
+	btn_low[3] = 105;
+	btn_high[3] = 148;
+	btn_low[4] = 149;
+	btn_high[4] = 189;
+	btn_low[5] = 190;
+	btn_high[5] = 228;
+	btn_low[6] = 229;
+	btn_high[6] = 269;
+	btn_low[7] = 270;
+	btn_high[7] = 500;
 	n_ready = wcd9xxx_mbhc_cal_btn_det_mp(btn_cfg, MBHC_BTN_DET_N_READY);
 	n_ready[0] = 80;
 	n_ready[1] = 68;
@@ -2903,6 +3156,36 @@ static struct snd_soc_dai_link msm8994_common_dai_links[] = {
 		.codec_name = "tomtom_codec",
 	},
 	{
+		.name = "Quaternary MI2S Hostless",
+		.stream_name = "QUAT_MI2S_TX Hostless",
+		.cpu_dai_name = "QUAT_MI2S_HOSTLESS",
+		.platform_name = "msm-pcm-hostless",
+		.dynamic = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.no_host_mode = SND_SOC_DAI_LINK_NO_HOST,
+		.ignore_suspend = 1,
+		/* this dainlink has playback support */
+		.ignore_pmdown_time = 1,
+		.codec_dai_name = "snd-soc-dummy-dai",
+		.codec_name = "snd-soc-dummy",
+	},
+	{
+		.name = "Tertiary MI2S Hostless",
+		.stream_name = "TERT_MI2S Hostless",
+		.cpu_dai_name = "TERT_MI2S_HOSTLESS",
+		.platform_name = "msm-pcm-hostless",
+		.dynamic = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.no_host_mode = SND_SOC_DAI_LINK_NO_HOST,
+		.ignore_suspend = 1,
+		/* this dainlink has playback support */
+		.ignore_pmdown_time = 1,
+		.codec_dai_name = "snd-soc-dummy-dai",
+		.codec_name = "snd-soc-dummy",
+	},
+	{
 		.name = "MultiMedia3 Record",
 		.stream_name = "MultiMedia3 Capture",
 		.cpu_dai_name = "MultiMedia3",
@@ -3571,6 +3854,9 @@ static int msm8994_asoc_machine_remove(struct platform_device *pdev)
 	msm8994_audio_plug_device_remove(apq8094_db_ext_fp_out_dev);
 
 	msm_release_pinctrl(pdev);
+
+	msm_mi2s_release_pinctrl(pdev, TERT_MI2S_PCM);
+	msm_mi2s_release_pinctrl(pdev, QUAT_MI2S_PCM);
 	snd_soc_unregister_card(card);
 
 	return 0;
